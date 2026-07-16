@@ -1,0 +1,34 @@
+{
+  "version": "0.1.0",
+  "languages": ["en", "ta", "tanglish"],
+  "flow_buckets": ["introduction", "education", "next_steps", "closing_summary"],
+  "intents": [
+    "project_info",
+    "pricing",
+    "location",
+    "amenities",
+    "site_visit",
+    "callback",
+    "brochure",
+    "language_switch",
+    "context_switch",
+    "out_of_domain",
+    "human_handoff",
+    "greeting",
+    "affirm",
+    "unknown"
+  ],
+  "projects": ["highcity", "avenuepark", "mercury"],
+  "session_fields": [
+    "session_id",
+    "project_id",
+    "language",
+    "flow_bucket",
+    "transcript",
+    "memory",
+    "last_intent",
+    "last_faq_source",
+    "needs_handoff",
+    "final_summary"
+  ]
+}
