@@ -1,4 +1,4 @@
-"""STT/TTS helpers for the live provider pipeline."""
+"""STT/TTS helpers for the live provider pipeline (+ telephony codec glue)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 
 from app.core.logging import get_logger
+from app.integrations.twilio import audio_codec
 from app.models.session import Language
 from app.providers.errors import ProviderRuntimeError
 from app.providers.factory import ProviderBundle
@@ -108,3 +109,21 @@ class AudioPipeline:
                 latency_ms=latency,
                 degraded=True,
             )
+
+    @staticmethod
+    def twilio_mulaw_to_wav_base64(mulaw: bytes) -> str:
+        """Convert Twilio inbound μ-law frames to WAV base64 for STT."""
+        wav = audio_codec.mulaw_frames_to_wav(mulaw)
+        return base64.b64encode(wav).decode("ascii")
+
+    @staticmethod
+    def pipeline_audio_to_twilio_mulaw(
+        audio_base64: str,
+        *,
+        src_sample_rate: int = 22050,
+    ) -> bytes:
+        """Convert TTS WAV/PCM base64 to Twilio μ-law @ 8 kHz."""
+        raw = base64.b64decode(audio_base64)
+        return audio_codec.pcm_or_wav_to_mulaw(
+            raw, src_sample_rate=src_sample_rate, is_wav=True
+        )

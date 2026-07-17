@@ -203,7 +203,9 @@ label {
 }
 
 select,
-textarea {
+textarea,
+input[type="tel"],
+.telephony-panel input[type="text"] {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -211,6 +213,21 @@ textarea {
   color: var(--sand);
   font: inherit;
   padding: 0.55rem 0.65rem;
+}
+
+.telephony-panel .call-status {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  word-break: break-all;
+}
+
+.telephony-panel .call-status .ok {
+  color: #7fd88f;
 }
 
 textarea {
@@ -451,6 +468,213 @@ textarea {
 
 .muted {
   color: var(--sand-dim);
+}
+
+.lead-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.lead-filter-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--sand-dim);
+}
+
+.lead-filter-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+  font-size: 0.82rem;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--sand-dim);
+  cursor: pointer;
+}
+
+.lead-count {
+  font-size: 0.8rem;
+  color: var(--sand-dim);
+  align-self: center;
+}
+
+.lead-results {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.lead-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.lead-row--blocked {
+  opacity: 0.65;
+}
+
+.lead-row__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  font-size: 0.8rem;
+  min-width: 0;
+}
+
+.lead-row__info .mono {
+  color: var(--sand-dim);
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
+.lead-bucket {
+  color: #7fd88f;
+  font-size: 0.74rem;
+}
+
+.lead-block-reasons {
+  color: #e6a07a;
+  font-size: 0.74rem;
+}
+
+.lead-call-status {
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
+.lead-call-status.ok {
+  color: #7fd88f;
+}
+
+.campaign-summary {
+  margin-top: 1rem;
+}
+
+.campaign-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.chip {
+  padding: 0.2rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.74rem;
+  color: var(--sand-dim);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.chip--ok {
+  color: #7fd88f;
+  border-color: rgba(127, 216, 143, 0.4);
+}
+
+.chip--warn {
+  color: #e6a07a;
+  border-color: rgba(230, 160, 122, 0.4);
+}
+
+.chip--live {
+  color: #8fc7ff;
+  border-color: rgba(143, 199, 255, 0.4);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.state-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  border: 1px solid var(--line);
+  color: var(--sand-dim);
+  white-space: nowrap;
+}
+
+.state-badge--dialing {
+  color: #8fc7ff;
+  border-color: rgba(143, 199, 255, 0.4);
+}
+
+.state-badge--connected {
+  color: #7fd88f;
+  border-color: rgba(127, 216, 143, 0.4);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+.state-badge--completed {
+  color: #7fd88f;
+  border-color: rgba(127, 216, 143, 0.4);
+}
+
+.state-badge--blocked,
+.state-badge--failed {
+  color: #e6a07a;
+  border-color: rgba(230, 160, 122, 0.4);
+}
+
+.advanced-options {
+  margin-top: 1rem;
+}
+
+.advanced-options summary,
+.advanced-tools > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: var(--sand-dim);
+}
+
+.advanced-options[open] summary {
+  margin-bottom: 0.75rem;
+}
+
+.advanced-tools {
+  margin-top: 1.5rem;
+}
+
+.advanced-tools > summary {
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.advanced-tools[open] > summary {
+  margin-bottom: 1.25rem;
+}
+
+.campaign-blocked {
+  border-top: 1px solid var(--line);
+  padding-top: 0.6rem;
+}
+
+.campaign-blocked summary {
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--sand-dim);
+  margin-bottom: 0.5rem;
+}
+
+@media (max-width: 900px) {
+  .lead-filter-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @keyframes rise {

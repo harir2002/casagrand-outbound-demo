@@ -168,11 +168,40 @@ async def main() -> int:
         if timings.get("total_ms") is None:
             failures.append("Missing total_ms timing field")
 
-        # Warm-path second turn (reused HTTP clients / WS path)
-        view2 = await orchestrator.handle_turn(
+        # 4b) End-to-end streaming cascade (Groq deltas → Sarvam WS → client events)
+        stream_events = []
+        async for ev in orchestrator.handle_turn_stream(
             TurnRequest(
                 session_id=created.session.session_id,
                 text="What amenities are available?",
+                skip_llm=False,
+            )
+        ):
+            stream_events.append(ev)
+        names = [e.get("event") for e in stream_events]
+        end = stream_events[-1] if stream_events else {}
+        st = end.get("timings") or {}
+        print(
+            "STREAM ORCH "
+            f"events={names} "
+            f"first_audio={st.get('first_audio_ms')} total={st.get('total_ms')} "
+            f"transport={end.get('transport')} fallback={end.get('fallback_used')} "
+            f"audio_chunks={sum(1 for e in stream_events if e.get('event')=='audio_chunk')}"
+        )
+        if not stream_events or stream_events[0].get("event") != "stream_start":
+            failures.append("Stream path missing stream_start")
+        if "audio_chunk" not in names:
+            failures.append("Stream path missing audio_chunk")
+        if end.get("event") != "stream_end":
+            failures.append("Stream path missing stream_end")
+        if st.get("first_audio_ms") is None:
+            failures.append("Stream path missing first_audio_ms")
+
+        # Warm-path second aggregated turn (reused HTTP clients / WS path)
+        view2 = await orchestrator.handle_turn(
+            TurnRequest(
+                session_id=created.session.session_id,
+                text="Tell me about location",
                 skip_llm=False,
             )
         )

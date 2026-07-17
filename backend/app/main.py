@@ -7,6 +7,7 @@ from app.api.router import build_api_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.providers.factory import validate_live_provider_config
+from app.integrations.twilio.config import validate_twilio_config
 
 
 def create_app() -> FastAPI:
@@ -30,6 +31,25 @@ def create_app() -> FastAPI:
             settings.tts_provider,
             settings.llm_provider,
         )
+
+    twilio_problems = validate_twilio_config()
+    if settings.twilio_enabled:
+        if twilio_problems:
+            for problem in twilio_problems:
+                logger.error("TWILIO CONFIG ERROR: %s", problem)
+            logger.error(
+                "Twilio is enabled but misconfigured. Set TWILIO_ACCOUNT_SID, "
+                "TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER, and TWILIO_PUBLIC_BASE_URL."
+            )
+        else:
+            logger.info(
+                "twilio_ready from=%s public_base=%s stream=%s",
+                settings.twilio_from_number,
+                settings.twilio_public_base_url,
+                settings.twilio_media_stream_path,
+            )
+    else:
+        logger.info("twilio_disabled (set TWILIO_ENABLED=true to activate telephony)")
 
     app = FastAPI(
         title="Casagrand Voice Agent API",

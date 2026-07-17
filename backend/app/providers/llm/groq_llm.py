@@ -69,6 +69,82 @@ class GroqLLM(LLMProvider):
             prompt, language, system_prompt=system_prompt
         )
 
+    async def stream_text(
+        self,
+        prompt: str,
+        language: Language,
+        *,
+        system_prompt: str | None = None,
+    ):
+        """Yield Groq SSE text deltas (falls back to a single complete() chunk)."""
+        if not self.streaming:
+            result = await self._complete_non_streaming(
+                prompt, language, system_prompt=system_prompt
+            )
+            if result.text:
+                yield result.text
+            return
+
+        try:
+            async for delta in self._iter_stream_deltas(
+                prompt, language, system_prompt=system_prompt
+            ):
+                yield delta
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("groq_stream_text_fallback error=%s", exc)
+            result = await self._complete_non_streaming(
+                prompt, language, system_prompt=system_prompt
+            )
+            if result.text:
+                yield result.text
+
+    async def _iter_stream_deltas(
+        self,
+        prompt: str,
+        language: Language,
+        *,
+        system_prompt: str | None = None,
+    ):
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        body = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": True,
+        }
+        client = self._get_client()
+        async with client.stream(
+            "POST",
+            f"{self.base_url}/chat/completions",
+            headers=headers,
+            json=body,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                delta = (choices[0].get("delta") or {}).get("content") or ""
+                if delta:
+                    yield str(delta)
+
     async def _complete_non_streaming(
         self,
         prompt: str,
@@ -137,53 +213,14 @@ class GroqLLM(LLMProvider):
     ) -> LlmResult:
         """SSE chat completion — records first_token_ms; returns full text."""
         started = time.perf_counter()
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
-
-        body = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "stream": True,
-        }
-
-        client = self._get_client()
         parts: list[str] = []
         first_token_ms: float | None = None
-
-        async with client.stream(
-            "POST",
-            f"{self.base_url}/chat/completions",
-            headers=headers,
-            json=body,
-        ) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                payload = line[5:].strip()
-                if payload == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(payload)
-                except json.JSONDecodeError:
-                    continue
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                delta = (choices[0].get("delta") or {}).get("content") or ""
-                if not delta:
-                    continue
-                if first_token_ms is None:
-                    first_token_ms = round((time.perf_counter() - started) * 1000, 2)
-                parts.append(str(delta))
+        async for delta in self._iter_stream_deltas(
+            prompt, language, system_prompt=system_prompt
+        ):
+            if first_token_ms is None:
+                first_token_ms = round((time.perf_counter() - started) * 1000, 2)
+            parts.append(delta)
 
         text = "".join(parts).strip()
         latency_ms = round((time.perf_counter() - started) * 1000, 2)

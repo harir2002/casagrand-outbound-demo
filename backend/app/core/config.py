@@ -50,6 +50,17 @@ class Settings(BaseSettings):
     provider_timeout_seconds: float = 20.0
     provider_max_retries: int = 1
 
+    # Twilio telephony (optional; enabled via TWILIO_ENABLED=true)
+    twilio_enabled: bool = False
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    twilio_public_base_url: str = ""
+    twilio_media_stream_path: str = "/twilio/media-stream"
+    twilio_voice_webhook_path: str = "/twilio/voice-webhook"
+    twilio_validate_signatures: bool = True
+    twilio_status_callback_path: str = "/twilio/status-callback"
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
@@ -67,6 +78,14 @@ class Settings(BaseSettings):
         if self.provider_mode.strip().lower() == "test":
             return True
         return bool(self.allow_test_stubs)
+
+    @property
+    def has_twilio_credentials(self) -> bool:
+        return bool(
+            self.twilio_account_sid.strip()
+            and self.twilio_auth_token.strip()
+            and self.twilio_from_number.strip()
+        )
 
 
 @lru_cache

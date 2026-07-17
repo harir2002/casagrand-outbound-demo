@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+
 from app.core.logging import get_logger
 from app.models.session import Language
+from app.providers.stream_events import AudioChunk
 from app.providers.tts.base import TTSProvider
 from app.providers.tts.sarvam_tts import SarvamTTS
 from app.providers.tts.sarvam_tts_ws import SarvamStreamingTTS
@@ -63,3 +66,77 @@ class HybridSarvamTTS(TTSProvider):
         meta.setdefault("stream_start_ms", None)
         result.meta = meta
         return result
+
+    async def stream_audio_chunks(
+        self, text: str, language: Language
+    ) -> AsyncIterator[AudioChunk]:
+        if self.prefer_streaming and self.streaming is not None:
+            try:
+                async for chunk in self.streaming.stream_audio_chunks(text, language):
+                    yield chunk
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sarvam_tts_ws_chunk_fallback_to_http error=%s", exc)
+                result = await self.http.synthesize(text, language)
+                if result.audio_base64:
+                    yield AudioChunk(
+                        audio_base64=result.audio_base64,
+                        mime_type=result.mime_type or "audio/wav",
+                        index=0,
+                        meta={
+                            "transport": "http",
+                            "streaming": False,
+                            "fallback_used": True,
+                            "stream_error": str(exc),
+                            "first_audio_ms": result.latency_ms,
+                        },
+                    )
+                return
+
+        async for chunk in super().stream_audio_chunks(text, language):
+            chunk.meta.setdefault("transport", "http")
+            chunk.meta.setdefault("fallback_used", False)
+            yield chunk
+
+    async def stream_audio_from_texts(
+        self, texts: AsyncIterator[str], language: Language
+    ) -> AsyncIterator[AudioChunk]:
+        if self.prefer_streaming and self.streaming is not None:
+            buffered: list[str] = []
+
+            async def _tee() -> AsyncIterator[str]:
+                async for piece in texts:
+                    cleaned = (piece or "").strip()
+                    if cleaned:
+                        buffered.append(cleaned)
+                        yield cleaned
+
+            try:
+                async for chunk in self.streaming.stream_audio_from_texts(
+                    _tee(), language
+                ):
+                    yield chunk
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("sarvam_tts_ws_segment_fallback_to_http error=%s", exc)
+                joined = " ".join(buffered).strip()
+                if not joined:
+                    return
+                result = await self.http.synthesize(joined, language)
+                if result.audio_base64:
+                    yield AudioChunk(
+                        audio_base64=result.audio_base64,
+                        mime_type=result.mime_type or "audio/wav",
+                        index=0,
+                        meta={
+                            "transport": "http",
+                            "streaming": False,
+                            "fallback_used": True,
+                            "stream_error": str(exc),
+                            "first_audio_ms": result.latency_ms,
+                        },
+                    )
+                return
+
+        async for chunk in super().stream_audio_from_texts(texts, language):
+            yield chunk

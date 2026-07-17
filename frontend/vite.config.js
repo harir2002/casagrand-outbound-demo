@@ -9,6 +9,9 @@ export default defineConfig({
       "/health": "http://127.0.0.1:8000",
       "/projects": "http://127.0.0.1:8000",
       "/session": "http://127.0.0.1:8000",
+      "/leads": "http://127.0.0.1:8000",
+      "/campaigns": "http://127.0.0.1:8000",
+      "/twilio": "http://127.0.0.1:8000",
     },
   },
 });

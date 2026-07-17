@@ -37,7 +37,14 @@ export async function request(path, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const detail = data.detail || data.error || response.statusText || "Request failed";
+    let detail = data.detail || data.error || response.statusText || "Request failed";
+    // FastAPI validation errors arrive as an array of {msg, loc, ...}
+    if (Array.isArray(detail)) {
+      detail = detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+    } else if (detail && typeof detail === "object" && detail.message) {
+      // Structured errors (e.g. blocked leads) carry a human message
+      detail = detail.message;
+    }
     throw new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), {
       status: response.status,
       latencyMs,

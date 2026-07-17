@@ -17,23 +17,24 @@ def generate_summary(session: SessionState) -> str:
     callback = memory.preferred_callback_time or "not specified"
     brochure = "yes" if memory.brochure_requested else "no"
     handoff = "requested" if session.needs_handoff else "not requested"
+    customer = f"Customer: {memory.caller_name}. " if memory.caller_name else ""
 
     if language == Language.TA:
         return (
-            f"சுருக்கம்: திட்டம் {project_name}. மொழி: {language.value}. "
+            f"{customer}சுருக்கம்: திட்டம் {project_name}. மொழி: {language.value}. "
             f"தள வருகை ஆர்வம்: {visit} (நாள்: {day}). "
             f"கால்பேக்: {callback}. Brochure: {brochure}. "
             f"Handoff: {handoff}. கடைசி intent: {session.last_intent}."
         )
     if language == Language.TANGLISH:
         return (
-            f"Summary: Project {project_name}. Language: {language.value}. "
+            f"{customer}Summary: Project {project_name}. Language: {language.value}. "
             f"Site visit interest: {visit} (day: {day}). "
             f"Callback: {callback}. Brochure: {brochure}. "
             f"Handoff: {handoff}. Last intent: {session.last_intent}."
         )
     return (
-        f"Summary: Discussed {project_name}. Language: {language.value}. "
+        f"{customer}Summary: Discussed {project_name}. Language: {language.value}. "
         f"Site-visit interest: {visit} (preferred day: {day}). "
         f"Callback preference: {callback}. Brochure requested: {brochure}. "
         f"Human handoff: {handoff}. Last intent: {session.last_intent}."

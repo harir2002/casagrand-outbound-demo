@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from app.data.projects import list_projects
 from app.models.call_view import (
@@ -37,6 +38,31 @@ async def turn(payload: TurnRequest) -> CallViewResponse:
             detail="Provide text or audio_base64 for /session/turn",
         )
     return await get_orchestrator().handle_turn(payload)
+
+
+@router.post("/session/turn/stream")
+async def turn_stream(payload: TurnRequest) -> StreamingResponse:
+    """NDJSON event stream: stream_start, text_delta, audio_chunk, stream_end, error."""
+    if not (payload.text and payload.text.strip()) and not payload.audio_base64:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide text or audio_base64 for /session/turn/stream",
+        )
+
+    import json
+
+    async def event_bytes():
+        async for event in get_orchestrator().handle_turn_stream(payload):
+            yield (json.dumps(event, default=str) + "\n").encode("utf-8")
+
+    return StreamingResponse(
+        event_bytes(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/session/reset", response_model=CallViewResponse)

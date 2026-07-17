@@ -4,14 +4,17 @@ import {
   getApiMode,
   listProjects,
   resetSession,
-  sendTurn,
+  sendTurnStreaming,
   startSession,
 } from "../api/calls";
 import CallControls from "../components/CallControls";
+import CampaignPanel from "../components/CampaignPanel";
 import CurrentStateCard from "../components/CurrentStateCard";
+import LeadFilterPanel from "../components/LeadFilterPanel";
 import LoadingIndicator from "../components/LoadingIndicator";
 import SlotPanel from "../components/SlotPanel";
 import SummaryPanel from "../components/SummaryPanel";
+import TelephonyPanel from "../components/TelephonyPanel";
 import TranscriptPanel from "../components/TranscriptPanel";
 
 const FALLBACK_PROJECTS = [
@@ -45,6 +48,7 @@ export default function DemoPage() {
   const [error, setError] = useState(null);
   const [warning, setWarning] = useState(null);
   const [apiOnline, setApiOnline] = useState(null);
+  const [streamHint, setStreamHint] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,6 +81,14 @@ export default function DemoPage() {
       setReply(data.reply || null);
       setLatencyMs(data.latency_ms ?? ms);
       setWarning(data.warning || null);
+      if (data.streamMeta) {
+        const sm = data.streamMeta;
+        setStreamHint(
+          `stream first_audio=${sm.first_audio_ms ?? "—"}ms · total=${sm.total_ms ?? ms}ms · ${sm.transport || "—"} · fallback=${sm.fallback_used ? "yes" : "no"}`
+        );
+      } else {
+        setStreamHint(null);
+      }
       if (data.error) setError(data.error);
       if (data.session?.language) setLanguage(data.session.language);
       if (data.session?.project_id) setProjectId(data.session.project_id);
@@ -97,7 +109,7 @@ export default function DemoPage() {
   async function handleSend() {
     if (!session?.session_id || !utterance.trim()) return;
     const data = await run(() =>
-      sendTurn({
+      sendTurnStreaming({
         sessionId: session.session_id,
         text: utterance.trim(),
         language,
@@ -115,6 +127,7 @@ export default function DemoPage() {
     await run(() => resetSession({ sessionId: session.session_id }));
     setUtterance("");
     setInterrupt(false);
+    setStreamHint(null);
   }
 
   const callStatus = deriveCallStatus(session);
@@ -147,6 +160,7 @@ export default function DemoPage() {
           </span>
         </div>
         {providerLine && <p className="provider-line mono">{providerLine}</p>}
+        {streamHint && <p className="provider-line mono">{streamHint}</p>}
       </header>
 
       {error && (
@@ -161,22 +175,7 @@ export default function DemoPage() {
       )}
 
       <main className="demo-grid">
-        <CallControls
-          projects={projects}
-          projectId={projectId}
-          language={language}
-          utterance={utterance}
-          interrupt={interrupt}
-          loading={loading || apiOnline === false}
-          hasSession={Boolean(session)}
-          onProjectChange={setProjectId}
-          onLanguageChange={setLanguage}
-          onUtteranceChange={setUtterance}
-          onInterruptChange={setInterrupt}
-          onStart={handleStart}
-          onSend={handleSend}
-          onReset={handleReset}
-        />
+        <TelephonyPanel projects={projects} />
 
         <CurrentStateCard
           session={session}
@@ -191,6 +190,32 @@ export default function DemoPage() {
           handoffPayload={session?.handoff_payload}
         />
       </main>
+
+      <details className="advanced-tools">
+        <summary>Demo &amp; testing tools (manual console, campaigns, lead filters)</summary>
+        <div className="demo-grid">
+          <CallControls
+            projects={projects}
+            projectId={projectId}
+            language={language}
+            utterance={utterance}
+            interrupt={interrupt}
+            loading={loading || apiOnline === false}
+            hasSession={Boolean(session)}
+            onProjectChange={setProjectId}
+            onLanguageChange={setLanguage}
+            onUtteranceChange={setUtterance}
+            onInterruptChange={setInterrupt}
+            onStart={handleStart}
+            onSend={handleSend}
+            onReset={handleReset}
+          />
+
+          <CampaignPanel projects={projects} />
+
+          <LeadFilterPanel projects={projects} />
+        </div>
+      </details>
     </div>
   );
 }

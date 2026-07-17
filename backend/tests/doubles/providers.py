@@ -53,8 +53,36 @@ class StubTTS(TTSProvider):
             mime_type="audio/wav",
             provider=self.name,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
-            meta={"bytes": len(payload)},
+            meta={
+                "bytes": len(payload),
+                "transport": "stub",
+                "streaming": False,
+                "fallback_used": False,
+                "first_audio_ms": 1.0,
+                "stream_start_ms": 0.5,
+            },
         )
+
+    async def stream_audio_from_texts(self, texts, language: Language):
+        """Synthesize each speech segment so cascade tests get ordered chunks."""
+        from app.providers.stream_events import AudioChunk
+
+        index = 0
+        async for piece in texts:
+            cleaned = (piece or "").strip()
+            if not cleaned:
+                continue
+            result = await self.synthesize(cleaned, language)
+            meta = dict(result.meta or {})
+            meta["streaming"] = True
+            meta["transport"] = "stub"
+            yield AudioChunk(
+                audio_base64=result.audio_base64 or "",
+                mime_type=result.mime_type or "audio/wav",
+                index=index,
+                meta=meta,
+            )
+            index += 1
 
 
 class StubLLM(LLMProvider):
@@ -71,12 +99,36 @@ class StubLLM(LLMProvider):
         text = prompt.strip()
         if "GROUNDED_ANSWER:" in text:
             text = text.split("GROUNDED_ANSWER:", 1)[1].strip()
+        elif "ANSWER:" in text:
+            text = text.split("ANSWER:", 1)[1].strip()
+            if "Rewrite for speech only." in text:
+                text = text.split("Rewrite for speech only.", 1)[0].strip()
         return LlmResult(
             text=text,
             provider=self.name,
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
-            meta={"language": language.value, "has_system": bool(system_prompt)},
+            meta={
+                "language": language.value,
+                "has_system": bool(system_prompt),
+                "streaming": False,
+            },
         )
+
+    async def stream_text(
+        self,
+        prompt: str,
+        language: Language,
+        *,
+        system_prompt: str | None = None,
+    ):
+        result = await self.complete(
+            prompt, language, system_prompt=system_prompt
+        )
+        words = result.text.split()
+        if not words:
+            return
+        for i, word in enumerate(words):
+            yield word + (" " if i < len(words) - 1 else "")
 
 
 class FailingSTT(STTProvider):
