@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
+
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.core.config import reset_settings_cache
 from app.integrations.twilio import call_registry
+from app.integrations.twilio.client import validate_twilio_signature
 from app.integrations.twilio.config import load_twilio_config
+from app.main import create_app
 from app.integrations.twilio.schemas import OutboundCallRequest, normalize_e164
 from app.integrations.twilio.service import (
     TwilioCallService,
@@ -71,6 +78,16 @@ class _FakeTwilioClient:
             "status": "queued",
             "direction": "outbound-api",
         }
+
+
+def _twilio_signature(url: str, params: dict[str, str], auth_token: str) -> str:
+    pieces = [url]
+    for key in sorted(params.keys()):
+        pieces.append(key)
+        pieces.append(params[key])
+    payload = "".join(pieces).encode("utf-8")
+    digest = hmac.new(auth_token.encode("utf-8"), payload, hashlib.sha1).digest()
+    return base64.b64encode(digest).decode("utf-8")
 
 
 @pytest.mark.asyncio
@@ -230,4 +247,104 @@ def test_status_callback_updates_registry(client, monkeypatch):
     assert response.status_code == 200
     entry = call_registry.get_call("CAcb1")
     assert entry["status"] == "answered"
+    call_registry.clear()
+
+
+def test_voice_webhook_rejects_invalid_signature_in_live_mode(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("PROVIDER_MODE", "live")
+    monkeypatch.setenv("ALLOW_TEST_STUBS", "false")
+    monkeypatch.setenv("STT_PROVIDER", "sarvam")
+    monkeypatch.setenv("TTS_PROVIDER", "sarvam")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("SARVAM_API_KEY", "sarvam-live")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-live")
+    monkeypatch.setenv("TWILIO_ENABLED", "true")
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACxxxxxxxx")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TWILIO_FROM_NUMBER", "+15551234567")
+    monkeypatch.setenv("TWILIO_PUBLIC_BASE_URL", "https://testserver")
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "true")
+    reset_settings_cache()
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/twilio/voice-webhook",
+            data={"session_id": "sess-1", "project_id": "highcity", "language": "en"},
+            headers={"X-Twilio-Signature": "bad-signature"},
+        )
+    assert response.status_code == 403
+    assert "Invalid Twilio signature" in response.text
+
+
+def test_voice_webhook_accepts_valid_signature_in_live_mode(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("PROVIDER_MODE", "live")
+    monkeypatch.setenv("ALLOW_TEST_STUBS", "false")
+    monkeypatch.setenv("STT_PROVIDER", "sarvam")
+    monkeypatch.setenv("TTS_PROVIDER", "sarvam")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("SARVAM_API_KEY", "sarvam-live")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-live")
+    monkeypatch.setenv("TWILIO_ENABLED", "true")
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACxxxxxxxx")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TWILIO_FROM_NUMBER", "+15551234567")
+    monkeypatch.setenv("TWILIO_PUBLIC_BASE_URL", "https://testserver")
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "true")
+    reset_settings_cache()
+
+    params = {"session_id": "sess-1", "project_id": "highcity", "language": "en"}
+    url = "https://testserver/twilio/voice-webhook"
+    signature = _twilio_signature(url, params, "token")
+    assert validate_twilio_signature(
+        auth_token="token",
+        signature=signature,
+        url=url,
+        params=params,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/twilio/voice-webhook",
+            data=params,
+            headers={"X-Twilio-Signature": signature},
+        )
+    assert response.status_code == 200
+    assert "<Connect>" in response.text
+
+
+def test_status_callback_rejects_invalid_signature_in_live_mode(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("PROVIDER_MODE", "live")
+    monkeypatch.setenv("ALLOW_TEST_STUBS", "false")
+    monkeypatch.setenv("STT_PROVIDER", "sarvam")
+    monkeypatch.setenv("TTS_PROVIDER", "sarvam")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("SARVAM_API_KEY", "sarvam-live")
+    monkeypatch.setenv("GROQ_API_KEY", "groq-live")
+    monkeypatch.setenv("TWILIO_ENABLED", "true")
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACxxxxxxxx")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "token")
+    monkeypatch.setenv("TWILIO_FROM_NUMBER", "+15551234567")
+    monkeypatch.setenv("TWILIO_PUBLIC_BASE_URL", "https://testserver")
+    monkeypatch.setenv("TWILIO_VALIDATE_SIGNATURES", "true")
+    reset_settings_cache()
+    call_registry.clear()
+    call_registry.record_call(
+        "CAsecure1",
+        to="+919888877777",
+        from_number="+15551234567",
+        session_id="sess-secure",
+        status="queued",
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.post(
+            "/twilio/status-callback",
+            data={"CallSid": "CAsecure1", "CallStatus": "answered"},
+            headers={"X-Twilio-Signature": "bad-signature"},
+        )
+    assert response.status_code == 403
+    assert call_registry.get_call("CAsecure1")["status"] == "queued"
     call_registry.clear()

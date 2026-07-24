@@ -8,6 +8,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.providers.factory import validate_live_provider_config
 from app.integrations.twilio.config import validate_twilio_config
+from app.kb.bootstrap import init_knowledge_base
 
 
 def create_app() -> FastAPI:
@@ -20,17 +21,34 @@ def create_app() -> FastAPI:
         for problem in problems:
             logger.error("PROVIDER CONFIG ERROR: %s", problem)
         logger.error(
-            "Live demo providers are not ready. Set SARVAM_API_KEY and GROQ_API_KEY "
-            "in backend/.env (or PROVIDER_MODE=test for automated tests only)."
+            "Live demo providers are not ready. Set SARVAM_API_KEY and "
+            "GROQ_API_KEY in backend/.env "
+            "(or PROVIDER_MODE=test for automated tests only)."
         )
     else:
+        logger.info("STT provider: Sarvam (%s)", settings.stt_provider)
+        logger.info("TTS provider: Sarvam (%s)", settings.tts_provider)
         logger.info(
-            "providers_ready mode=%s stt=%s tts=%s llm=%s",
+            "active TTS speaker: %s model=%s",
+            settings.sarvam_tts_speaker or "anushka",
+            settings.sarvam_tts_model or "bulbul:v2",
+        )
+        logger.info(
+            "providers_ready mode=%s llm=%s",
             "test" if settings.is_test_provider_mode else "live",
-            settings.stt_provider,
-            settings.tts_provider,
             settings.llm_provider,
         )
+
+    try:
+        kb_status = init_knowledge_base(settings)
+        logger.info(
+            "KB source: %s | RAG backend: %s | docs: %s",
+            kb_status.get("source"),
+            kb_status.get("backend"),
+            kb_status.get("document_count"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error("KB/RAG init failed: %s", exc)
 
     twilio_problems = validate_twilio_config()
     if settings.twilio_enabled:

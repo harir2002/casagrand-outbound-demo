@@ -84,6 +84,22 @@ INTENT_PATTERNS: list[tuple[Intent, list[str]]] = [
         ],
     ),
     (
+        Intent.COMPARISON,
+        [
+            r"\bcompar",
+            r"\bvs\b",
+            r"\bversus\b",
+            r"difference between",
+            r"which (is )?(better|best)",
+            r"highcity (or|vs) ",
+            r"avenuepark (or|vs) ",
+            r"mercury (or|vs) ",
+            r"ஒப்பீடு",
+            r"compare pannunga",
+            r"ethu better",
+        ],
+    ),
+    (
         Intent.PRICING,
         [
             r"\bprice\b",
@@ -137,18 +153,22 @@ INTENT_PATTERNS: list[tuple[Intent, list[str]]] = [
     (
         Intent.GREETING,
         [
-            r"^\s*(hi|hello|hey|vanakkam|வணக்கம்)\b",
+            # Avoid \\b after Tamil — Python word-boundaries fail on Indic scripts.
+            r"^\s*(hi|hello|hey|vanakkam|வணக்கம்)(?:\s|[.!,?]|$)",
             r"good (morning|afternoon|evening)",
         ],
     ),
     (
         Intent.AFFIRM,
         [
-            r"^\s*(yes|yeah|yep|ok|okay|sure|ஆம்|சரி|aam|sari)\b",
+            # \\b breaks ஆம்/சரி → OOD; use explicit end/punct/space boundaries.
+            r"^\s*(yes|yeah|yep|ok|okay|sure|ஆம்|ஆமா|ஆமாம்|சரி|சரிங்க|aam|ama|sari)(?:\s|[.!,?]|$)",
             r"go ahead",
             r"continue",
             r"next",
             r"அடுத்த",
+            r"தொடர",
+            r"செய்யலாம்",
         ],
     ),
 ]

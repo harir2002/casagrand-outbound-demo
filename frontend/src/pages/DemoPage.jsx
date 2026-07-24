@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   checkHealth,
   getApiMode,
+  getSessionState,
   listProjects,
   resetSession,
   sendTurnStreaming,
@@ -23,7 +24,10 @@ const FALLBACK_PROJECTS = [
   { id: "mercury", name: "Casagrand Mercury" },
 ];
 
-function deriveCallStatus(session) {
+const LIVE_SESSION_POLL_MS = 2000;
+
+function deriveCallStatus(session, telephonyLive) {
+  if (telephonyLive) return "active";
   if (!session) return "idle";
   if (session.call_status) return session.call_status;
   if (session.needs_handoff) return "handoff";
@@ -38,7 +42,7 @@ export default function DemoPage() {
   const apiMode = getApiMode();
   const [projects, setProjects] = useState(FALLBACK_PROJECTS);
   const [projectId, setProjectId] = useState("highcity");
-  const [language, setLanguage] = useState("en");
+  const [language, setLanguage] = useState("ta");
   const [utterance, setUtterance] = useState("");
   const [interrupt, setInterrupt] = useState(false);
   const [session, setSession] = useState(null);
@@ -49,6 +53,9 @@ export default function DemoPage() {
   const [warning, setWarning] = useState(null);
   const [apiOnline, setApiOnline] = useState(null);
   const [streamHint, setStreamHint] = useState(null);
+  const [telephonyLive, setTelephonyLive] = useState(false);
+  const liveSessionIdRef = useRef(null);
+  const pollRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,6 +78,61 @@ export default function DemoPage() {
     };
   }, []);
 
+  const refreshLiveSession = useCallback(async (sessionId) => {
+    if (!sessionId) return;
+    try {
+      const { data } = await getSessionState({ sessionId });
+      if (!data?.session) return;
+      // Ignore stale polls after the live session changes.
+      if (liveSessionIdRef.current && liveSessionIdRef.current !== sessionId) return;
+      setSession(data.session);
+      setReply(data.reply || null);
+      setLatencyMs(data.latency_ms ?? null);
+      setWarning(data.warning || null);
+      if (data.session.language) setLanguage(data.session.language);
+      if (data.session.project_id) setProjectId(data.session.project_id);
+      const turns = data.session.transcript?.length || 0;
+      setStreamHint(
+        `live outbound · session=${sessionId.slice(0, 8)}… · turns=${turns} · stt/tts=sarvam`
+      );
+    } catch {
+      // Session may not exist yet between dial and media-stream start.
+    }
+  }, []);
+
+  const handleCallSessionChange = useCallback(
+    (info) => {
+      const nextId = info?.sessionId || null;
+      const live = Boolean(info?.live && nextId);
+      setTelephonyLive(live);
+      liveSessionIdRef.current = nextId;
+
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+
+      if (!nextId) {
+        return;
+      }
+
+      // Immediately bind UI to the outbound session, then poll while live.
+      void refreshLiveSession(nextId);
+      if (live) {
+        pollRef.current = setInterval(() => {
+          void refreshLiveSession(nextId);
+        }, LIVE_SESSION_POLL_MS);
+      }
+    },
+    [refreshLiveSession]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
+
   async function run(action) {
     setLoading(true);
     setError(null);
@@ -86,7 +148,7 @@ export default function DemoPage() {
         setStreamHint(
           `stream first_audio=${sm.first_audio_ms ?? "—"}ms · total=${sm.total_ms ?? ms}ms · ${sm.transport || "—"} · fallback=${sm.fallback_used ? "yes" : "no"}`
         );
-      } else {
+      } else if (!telephonyLive) {
         setStreamHint(null);
       }
       if (data.error) setError(data.error);
@@ -130,11 +192,11 @@ export default function DemoPage() {
     setStreamHint(null);
   }
 
-  const callStatus = deriveCallStatus(session);
+  const callStatus = deriveCallStatus(session, telephonyLive);
   const faqSource = reply?.faq_source || session?.last_faq_source;
   const providerLine = session
-    ? `stt:${session.stt_provider || "—"} · llm:${session.llm_provider || "—"} · tts:${session.tts_provider || "—"}`
-    : null;
+    ? `stt:${session.stt_provider || "sarvam"} · llm:${session.llm_provider || "—"} · tts:${session.tts_provider || "sarvam"}`
+    : "stt:sarvam · tts:sarvam · llm:groq";
 
   return (
     <div className="demo-page">
@@ -158,8 +220,9 @@ export default function DemoPage() {
                 ? "Backend online"
                 : "Backend offline"}
           </span>
+          {telephonyLive && <span className="api-chip ok">Outbound live</span>}
         </div>
-        {providerLine && <p className="provider-line mono">{providerLine}</p>}
+        <p className="provider-line mono">{providerLine}</p>
         {streamHint && <p className="provider-line mono">{streamHint}</p>}
       </header>
 
@@ -175,7 +238,10 @@ export default function DemoPage() {
       )}
 
       <main className="demo-grid">
-        <TelephonyPanel projects={projects} />
+        <TelephonyPanel
+          projects={projects}
+          onCallSessionChange={handleCallSessionChange}
+        />
 
         <CurrentStateCard
           session={session}

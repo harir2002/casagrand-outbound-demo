@@ -17,7 +17,9 @@ from app.services.sentence_buffer import pop_complete_sentences
 logger = get_logger(__name__)
 
 SYSTEM_PROMPT = (
-    "Casagrand voice assistant. Rephrase only; no new facts. Max 2 short sentences."
+    "Casagrand voice assistant. Rephrase only; no new facts. "
+    "Keep ANSWER language/script (Tamil stays Tamil script; light English "
+    "only for brand/project terms). Max 2 short sentences."
 )
 
 
@@ -113,7 +115,7 @@ def aggregate_pcm_to_synthesis(
 ) -> SynthesisResult:
     audio_base64 = None
     if pcm_parts:
-        from app.providers.tts.sarvam_tts_ws import pcm_chunks_to_wav_base64
+        from app.providers.tts.audio_utils import pcm_chunks_to_wav_base64
 
         audio_base64 = pcm_chunks_to_wav_base64(b"".join(pcm_parts))
     elif wav_chunks:

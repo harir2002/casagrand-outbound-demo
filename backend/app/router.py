@@ -128,18 +128,20 @@ INTENT_PATTERNS: list[tuple[Intent, list[str]]] = [
     (
         Intent.GREETING,
         [
-            r"^\s*(hi|hello|hey|vanakkam|வணக்கம்)\b",
+            r"^\s*(hi|hello|hey|vanakkam|வணக்கம்)(?:\s|[.!,?]|$)",
             r"good (morning|afternoon|evening)",
         ],
     ),
     (
         Intent.AFFIRM,
         [
-            r"^\s*(yes|yeah|yep|ok|okay|sure|ஆம்|சரி|aam|sari)\b",
+            r"^\s*(yes|yeah|yep|ok|okay|sure|ஆம்|ஆமா|ஆமாம்|சரி|சரிங்க|aam|ama|sari)(?:\s|[.!,?]|$)",
             r"go ahead",
             r"continue",
             r"next",
             r"அடுத்த",
+            r"தொடர",
+            r"செய்யலாம்",
         ],
     ),
 ]

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import math
+import struct
 
 import pytest
 
@@ -12,6 +14,18 @@ from app.models.call_view import CallViewResponse
 from app.models.session import FlowBucket, Language
 from app.services.session_store import store
 from app.services.telephony_bridge import TelephonyBridge
+
+
+def _loud_speech_mulaw(frames: int = 8, frame_samples: int = 160) -> list[bytes]:
+    """Return several loud μ-law frames (above ambient VAD thresholds)."""
+    out: list[bytes] = []
+    for _ in range(frames):
+        pcm = bytearray()
+        for i in range(frame_samples):
+            value = int(9000 * math.sin(2 * math.pi * 400 * i / 8000.0))
+            pcm += struct.pack("<h", value)
+        out.append(pcm16_to_mulaw(bytes(pcm)))
+    return out
 
 
 class _RecordingSender:
@@ -25,6 +39,27 @@ class _RecordingSender:
 class _FakeOrchestrator:
     def __init__(self) -> None:
         self.calls = []
+        self.speak_calls = []
+
+    async def speak_text(self, text, language):
+        from app.providers.types import SynthesisResult
+        from app.services.audio_pipeline import SynthesizeOutcome
+
+        self.speak_calls.append((text, language))
+        pcm = b"\x00\x10" * 400
+        wav = pcm16_to_wav_bytes(pcm, sample_rate=8000)
+        audio_b64 = base64.b64encode(wav).decode("ascii")
+        return SynthesizeOutcome(
+            synthesis=SynthesisResult(
+                text=text,
+                audio_base64=audio_b64,
+                mime_type="audio/wav",
+                provider="stub",
+                latency_ms=4.0,
+            ),
+            warning=None,
+            latency_ms=4.0,
+        )
 
     async def handle_turn(self, payload):
         self.calls.append(payload)
@@ -63,6 +98,8 @@ async def test_bridge_connected_start_media_stop_flow(monkeypatch):
     bridge.MIN_SPEECH_BYTES = 80
     bridge.SILENCE_FRAMES_TO_COMMIT = 2
     bridge.MAX_UTTERANCE_BYTES = 10_000
+    bridge.POST_TTS_ECHO_GUARD_SEC = 0.0
+    bridge.SPEECH_START_FRAMES = 2
 
     await bridge.handle_message(
         parse_stream_message({"event": "connected", "protocol": "Call"})
@@ -86,27 +123,28 @@ async def test_bridge_connected_start_media_stop_flow(monkeypatch):
     )
     assert bridge.state is not None
     assert bridge.state.session_id
-    # Intro greeting turn
-    assert orch.calls
-    assert orch.calls[0].text == "hello"
+    # Intro is TTS-only (no fake user "hello" turn)
+    assert orch.speak_calls
+    assert not orch.calls
     # Bidirectional playback frames
     assert any(m.get("event") == "media" for m in sender.messages)
 
     # Simulate speech then silence → commit utterance
-    speech = pcm16_to_mulaw(b"\x80\x00" * 200)
-    speech_b64 = base64.b64encode(speech).decode("ascii")
     silence = b"\xff" * 160
     silence_b64 = base64.b64encode(silence).decode("ascii")
-
-    await bridge.handle_message(
-        parse_stream_message(
-            {
-                "event": "media",
-                "streamSid": "MZ1",
-                "media": {"track": "inbound", "payload": speech_b64},
-            }
+    for frame in _loud_speech_mulaw(frames=6):
+        await bridge.handle_message(
+            parse_stream_message(
+                {
+                    "event": "media",
+                    "streamSid": "MZ1",
+                    "media": {
+                        "track": "inbound",
+                        "payload": base64.b64encode(frame).decode("ascii"),
+                    },
+                }
+            )
         )
-    )
     for _ in range(3):
         await bridge.handle_message(
             parse_stream_message(
@@ -118,12 +156,12 @@ async def test_bridge_connected_start_media_stop_flow(monkeypatch):
             )
         )
 
-    assert len(orch.calls) >= 2
+    assert len(orch.calls) >= 1
     assert any(c.audio_base64 for c in orch.calls if hasattr(c, "audio_base64"))
     meta = bridge.metadata()
     assert meta["call_sid"] == "CA1"
     assert meta["stream_sid"] == "MZ1"
-    assert meta["timings"]["turns"] >= 1
+    assert meta["timings"]["turns"] >= 2
 
     await bridge.handle_message(
         parse_stream_message(
@@ -161,8 +199,9 @@ async def test_bridge_receive_only_skips_outbound_audio():
             }
         )
     )
-    # Intro turn ran but no media frames sent back
-    assert orch.calls
+    # Intro TTS ran but no media frames sent back (receive-only)
+    assert orch.speak_calls
+    assert not orch.calls
     assert not any(m.get("event") == "media" for m in sender.messages)
     store.clear()
 

@@ -12,8 +12,6 @@ from app.providers.factory import (
 from app.providers.llm.groq_llm import GroqLLM
 from app.providers.stt.sarvam_stt import SarvamSTT
 from app.providers.tts.hybrid_sarvam_tts import HybridSarvamTTS
-from app.providers.tts.sarvam_tts import SarvamTTS
-from app.providers.tts.sarvam_tts_ws import SarvamStreamingTTS
 from tests.doubles.providers import StubLLM, StubSTT, StubTTS
 
 
@@ -36,7 +34,7 @@ def test_live_mode_requires_keys(monkeypatch):
         build_provider_bundle(settings)
 
 
-def test_live_mode_selects_real_providers_when_keys_present(monkeypatch):
+def test_live_mode_selects_sarvam_tts(monkeypatch):
     monkeypatch.setenv("APP_ENV", "local")
     monkeypatch.setenv("PROVIDER_MODE", "live")
     monkeypatch.setenv("ALLOW_TEST_STUBS", "false")
@@ -45,6 +43,7 @@ def test_live_mode_selects_real_providers_when_keys_present(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "groq")
     monkeypatch.setenv("SARVAM_API_KEY", "test-sarvam")
     monkeypatch.setenv("GROQ_API_KEY", "test-groq")
+    monkeypatch.setenv("SARVAM_TTS_SPEAKER", "anushka")
     monkeypatch.setenv("SARVAM_TTS_STREAMING", "true")
     reset_settings_cache()
 
@@ -57,30 +56,27 @@ def test_live_mode_selects_real_providers_when_keys_present(monkeypatch):
     bundle = build_provider_bundle(settings)
     assert isinstance(bundle.stt, SarvamSTT)
     assert isinstance(bundle.tts, HybridSarvamTTS)
-    assert isinstance(bundle.tts.http, SarvamTTS)
-    assert isinstance(bundle.tts.streaming, SarvamStreamingTTS)
-    assert bundle.tts.prefer_streaming is True
+    assert bundle.tts.http.speaker == "anushka"
     assert isinstance(bundle.llm, GroqLLM)
     assert bundle.mode == "live"
+    assert bundle.tts_name == "sarvam"
 
 
-def test_http_only_tts_backup_when_streaming_disabled(monkeypatch):
+def test_elevenlabs_tts_rejected_in_live_mode(monkeypatch):
     monkeypatch.setenv("PROVIDER_MODE", "live")
     monkeypatch.setenv("ALLOW_TEST_STUBS", "false")
     monkeypatch.setenv("STT_PROVIDER", "sarvam")
-    monkeypatch.setenv("TTS_PROVIDER", "sarvam")
+    monkeypatch.setenv("TTS_PROVIDER", "elevenlabs")
     monkeypatch.setenv("LLM_PROVIDER", "groq")
     monkeypatch.setenv("SARVAM_API_KEY", "test-sarvam")
     monkeypatch.setenv("GROQ_API_KEY", "test-groq")
-    monkeypatch.setenv("SARVAM_TTS_STREAMING", "false")
     reset_settings_cache()
 
     settings = Settings()
-    bundle = build_provider_bundle(settings)
-    assert isinstance(bundle.tts, HybridSarvamTTS)
-    assert bundle.tts.prefer_streaming is False
-    assert bundle.tts.streaming is None
-    assert isinstance(bundle.tts.http, SarvamTTS)
+    problems = validate_live_provider_config(settings)
+    assert any("ElevenLabs TTS has been removed" in p for p in problems)
+    with pytest.raises(ProviderConfigError, match="sarvam"):
+        resolve_tts_name(settings)
 
 
 def test_test_mode_allows_stubs(monkeypatch):
@@ -115,3 +111,24 @@ def test_live_mode_rejects_explicit_stub_selection(monkeypatch):
     assert problems
     with pytest.raises(ProviderConfigError):
         resolve_stt_name(settings)
+
+
+def test_stt_tts_both_sarvam_independent_flags(monkeypatch):
+    """STT and TTS resolve separately but both default to Sarvam in live mode."""
+    monkeypatch.setenv("PROVIDER_MODE", "live")
+    monkeypatch.setenv("ALLOW_TEST_STUBS", "false")
+    monkeypatch.setenv("STT_PROVIDER", "sarvam")
+    monkeypatch.setenv("TTS_PROVIDER", "sarvam")
+    monkeypatch.setenv("LLM_PROVIDER", "groq")
+    monkeypatch.setenv("SARVAM_API_KEY", "test-sarvam")
+    monkeypatch.setenv("GROQ_API_KEY", "test-groq")
+    reset_settings_cache()
+
+    settings = Settings()
+    bundle = build_provider_bundle(settings)
+    assert bundle.stt_name == "sarvam"
+    assert bundle.tts_name == "sarvam"
+    assert isinstance(bundle.stt, SarvamSTT)
+    assert isinstance(bundle.tts, HybridSarvamTTS)
+    assert "elevenlabs" not in bundle.tts.__class__.__module__
+    assert "sarvam" in bundle.tts.__class__.__module__

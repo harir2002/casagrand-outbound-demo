@@ -131,7 +131,10 @@ async def voice_webhook(
         try:
             lang_enum = Language(lang)
         except ValueError:
-            lang_enum = Language.EN
+            try:
+                lang_enum = Language(settings.default_language)
+            except ValueError:
+                lang_enum = Language.TA
         created = call_service.create_session(
             __import__("app.models.session", fromlist=["CreateSessionRequest"]).CreateSessionRequest(
                 project_id=proj, language=lang_enum
@@ -157,11 +160,7 @@ async def status_callback(request: Request) -> PlainTextResponse:
     if request.method == "POST":
         form_data = await request.form()
         form = {str(k): str(v) for k, v in form_data.items()}
-        try:
-            _check_signature(request, form)
-        except HTTPException:
-            # Status callbacks are best-effort in local demos
-            logger.warning("twilio_status_callback_bad_signature")
+        _check_signature(request, form)
         call_sid = form.get("CallSid") or ""
         call_status = form.get("CallStatus") or ""
         if call_sid and call_status:

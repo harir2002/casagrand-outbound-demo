@@ -1,4 +1,4 @@
-"""Provider factory — real Sarvam/Groq for live demo; stubs only in test mode."""
+"""Provider factory — Sarvam STT + TTS, Groq LLM; stubs only in test mode."""
 
 from __future__ import annotations
 
@@ -55,6 +55,10 @@ def validate_live_provider_config(settings: Settings | None = None) -> list[str]
         problems.append("SARVAM_API_KEY is required for Sarvam STT in live mode.")
     if tts in {"sarvam", "auto"} and not settings.has_sarvam_key:
         problems.append("SARVAM_API_KEY is required for Sarvam TTS in live mode.")
+    if tts in {"elevenlabs"}:
+        problems.append(
+            "ElevenLabs TTS has been removed. Set TTS_PROVIDER=sarvam."
+        )
     if llm in {"groq", "auto"} and not settings.has_groq_key:
         problems.append("GROQ_API_KEY is required for Groq LLM in live mode.")
 
@@ -91,6 +95,11 @@ def resolve_tts_name(settings: Settings) -> str:
         if not settings.has_sarvam_key and not settings.is_test_provider_mode:
             raise ProviderConfigError("SARVAM_API_KEY is required for TTS (Sarvam).")
         return "sarvam" if settings.has_sarvam_key else "stub"
+    if choice == "elevenlabs":
+        raise ProviderConfigError(
+            "ElevenLabs TTS has been removed from the active path. "
+            "Set TTS_PROVIDER=sarvam."
+        )
     if choice in {"stub", "mock"}:
         if not settings.is_test_provider_mode:
             raise ProviderConfigError("TTS stub/mock is only allowed in test provider mode.")
@@ -153,23 +162,27 @@ def build_tts(settings: Settings | None = None) -> TTSProvider:
         http = SarvamTTS(
             settings.sarvam_api_key,
             base_url=settings.sarvam_base_url,
-            model=settings.sarvam_tts_model,
-            speaker=settings.sarvam_tts_speaker,
+            model=settings.sarvam_tts_model or "bulbul:v2",
+            speaker=settings.sarvam_tts_speaker or "anushka",
             timeout_seconds=settings.provider_timeout_seconds,
             max_retries=settings.provider_max_retries,
         )
+        streaming: SarvamStreamingTTS | None = None
         if settings.sarvam_tts_streaming:
             streaming = SarvamStreamingTTS(
                 settings.sarvam_api_key,
-                ws_url=settings.sarvam_tts_ws_url,
-                model=settings.sarvam_tts_model,
-                speaker=settings.sarvam_tts_speaker,
-                sample_rate=settings.sarvam_tts_sample_rate,
+                ws_url=settings.sarvam_tts_ws_url
+                or "wss://api.sarvam.ai/text-to-speech/ws",
+                model=settings.sarvam_tts_model or "bulbul:v2",
+                speaker=settings.sarvam_tts_speaker or "anushka",
+                sample_rate=settings.sarvam_tts_sample_rate or settings.tts_sample_rate,
                 timeout_seconds=settings.provider_timeout_seconds,
             )
-            return HybridSarvamTTS(http, streaming, prefer_streaming=True)
-        # Explicit backup: optimized non-streaming HTTP-only path
-        return HybridSarvamTTS(http, None, prefer_streaming=False)
+        return HybridSarvamTTS(
+            http,
+            streaming,
+            prefer_streaming=bool(settings.sarvam_tts_streaming and streaming),
+        )
     return _build_stub_tts()
 
 
@@ -212,11 +225,19 @@ def build_provider_bundle(settings: Settings | None = None) -> ProviderBundle:
         llm_name=llm_name,
         mode=mode,
     )
+    logger.info("STT provider: Sarvam (%s)", bundle.stt_name)
+    logger.info("TTS provider: Sarvam (%s)", bundle.tts_name)
+    if bundle.tts_name == "sarvam":
+        logger.info(
+            "active TTS speaker: %s model=%s streaming=%s sample_rate=%s",
+            settings.sarvam_tts_speaker or "anushka",
+            settings.sarvam_tts_model or "bulbul:v2",
+            settings.sarvam_tts_streaming,
+            settings.sarvam_tts_sample_rate or settings.tts_sample_rate,
+        )
     logger.info(
-        "providers_selected mode=%s stt=%s tts=%s llm=%s",
+        "providers_selected mode=%s llm=%s",
         bundle.mode,
-        bundle.stt_name,
-        bundle.tts_name,
         bundle.llm_name,
     )
     return bundle

@@ -1,4 +1,4 @@
-"""Call orchestration across router, FAQ, state machine, summary, handoff."""
+"""Call orchestration across router, FAQ/RAG, state machine, summary, handoff."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from app.models.session import (
 from app.services.faq_service import faq_service
 from app.services.handoff_service import build_handoff_payload
 from app.services.intent_router import route_utterance
+from app.services.session_memory import update_memory_after_turn
 from app.services.session_store import store
 from app.services.state_machine import apply_intent_transition, transition_to
 from app.services.summary_service import generate_summary
@@ -49,6 +50,12 @@ def create_session(payload: CreateSessionRequest) -> SessionResponse:
     )
     session.last_faq_source = intro.source
     session.last_intent = Intent.GREETING
+    update_memory_after_turn(
+        session,
+        user_text="",
+        intent=Intent.GREETING,
+        rag_sources=[intro.source] if intro.source else None,
+    )
     store.create(session)
 
     reply = AgentReply(
@@ -80,6 +87,12 @@ def reset_session(session_id: str) -> SessionResponse:
     )
     fresh.last_faq_source = intro.source
     fresh.last_intent = Intent.GREETING
+    update_memory_after_turn(
+        fresh,
+        user_text="",
+        intent=Intent.GREETING,
+        rag_sources=[intro.source] if intro.source else None,
+    )
     store.save(fresh)
     reply = AgentReply(
         text=intro.text,
@@ -96,8 +109,15 @@ def process_utterance(session_id: str, payload: UtteranceRequest) -> SessionResp
     session = store.get(session_id)
 
     if payload.interrupt:
+        # Barge-in: stop prior TTS path at the domain layer and prioritize
+        # the latest user intent for this turn.
         session.is_interrupted = True
         session.previous_bucket = session.flow_bucket
+        logger.info(
+            "barge_in session=%s prior_bucket=%s",
+            session_id,
+            session.previous_bucket,
+        )
 
     if payload.language is not None:
         session.language = payload.language
@@ -116,7 +136,7 @@ def process_utterance(session_id: str, payload: UtteranceRequest) -> SessionResp
     session.last_intent = route.intent
     _apply_slot_updates(session, route.extracted_slots)
 
-    reply_text, faq_source, intent = _compose_reply(session, route)
+    reply_text, faq_source, intent, rag_ms = _compose_reply(session, route, user_text)
 
     if intent != Intent.AFFIRM:
         apply_intent_transition(session, intent)
@@ -135,6 +155,21 @@ def process_utterance(session_id: str, payload: UtteranceRequest) -> SessionResp
             intent=intent,
         )
     )
+
+    handoff_reason = None
+    if session.needs_handoff:
+        handoff_reason = session.memory.handoff_reason or "caller_requested_human"
+
+    update_memory_after_turn(
+        session,
+        user_text=user_text,
+        intent=intent,
+        extracted_slots=route.extracted_slots,
+        rag_sources=[faq_source] if faq_source else None,
+        handoff_reason=handoff_reason,
+        summary=session.final_summary,
+    )
+
     session.is_interrupted = False
     store.save(session)
 
@@ -148,11 +183,19 @@ def process_utterance(session_id: str, payload: UtteranceRequest) -> SessionResp
         needs_handoff=session.needs_handoff,
     )
     logger.info(
-        "utterance_processed session=%s intent=%s latency_ms=%s",
+        "utterance_processed session=%s intent=%s rag_ms=%s latency_ms=%s",
         session_id,
         intent.value,
+        rag_ms,
         latency_ms,
     )
+    # Stash rag timing on session notes for orchestrator/smoke (lightweight)
+    if rag_ms is not None:
+        session.memory.notes = [
+            n for n in session.memory.notes if not n.startswith("rag_ms=")
+        ] + [f"rag_ms={rag_ms}"]
+        store.save(session)
+
     return SessionResponse(session=session, reply=reply, latency_ms=latency_ms)
 
 
@@ -162,11 +205,25 @@ def _apply_slot_updates(session: SessionState, slots: dict) -> None:
         session.memory.site_visit_interest = True
     if "preferred_callback_time" in slots:
         session.memory.preferred_callback_time = slots["preferred_callback_time"]
+        session.memory.callback_choice = slots["preferred_callback_time"]
+    if "unit_preference" in slots:
+        session.memory.unit_preference = slots["unit_preference"]
+    if "budget_band" in slots or "budget_mentioned" in slots:
+        band = slots.get("budget_band") or slots.get("budget_mentioned")
+        session.memory.budget_band = band
+        session.memory.budget_mentioned = band
+    if "caller_name" in slots or "customer_name" in slots:
+        name = slots.get("caller_name") or slots.get("customer_name")
+        session.memory.caller_name = name
+        session.memory.customer_name = name
 
 
-def _compose_reply(session: SessionState, route) -> tuple[str, str | None, Intent]:
+def _compose_reply(
+    session: SessionState, route, user_text: str
+) -> tuple[str, str | None, Intent, float | None]:
     intent = route.intent
     language = session.language
+    rag_ms: float | None = None
 
     if intent == Intent.LANGUAGE_SWITCH:
         new_lang = route.detected_language or Language(
@@ -178,56 +235,73 @@ def _compose_reply(session: SessionState, route) -> tuple[str, str | None, Inten
             Language.TA: "தமிழுக்கு மாற்றினேன். இந்த திட்டத்தில் எப்படி உதவட்டுமா?",
             Language.TANGLISH: "Tanglish ku switch aachu. Ippo eppadi help panna?",
         }[new_lang]
-        return text, f"system:language_switch:{new_lang.value}", intent
+        return text, f"system:language_switch:{new_lang.value}", intent, rag_ms
 
     if intent == Intent.CONTEXT_SWITCH and route.target_project_id:
         if get_project(route.target_project_id) is None:
-            result = faq_service.lookup(Intent.OUT_OF_DOMAIN, session.project_id, language)
-            return result.text, result.source, Intent.OUT_OF_DOMAIN
+            result = faq_service.lookup(
+                Intent.OUT_OF_DOMAIN, session.project_id, language, query=user_text
+            )
+            return result.text, result.source, Intent.OUT_OF_DOMAIN, rag_ms
         session.project_id = route.target_project_id
         transition_to(session, FlowBucket.EDUCATION, "context_switch")
         result = faq_service.education(session.project_id, language)
-        return result.text, result.source, intent
+        return result.text, result.source, intent, rag_ms
 
     if intent == Intent.HUMAN_HANDOFF:
         session.needs_handoff = True
-        payload = build_handoff_payload(session)
+        session.memory.handoff_reason = "caller_requested_human"
+        payload = build_handoff_payload(session, reason="caller_requested_human")
         session.handoff_payload = payload.model_dump(mode="json")
-        result = faq_service.lookup(intent, session.project_id, language)
-        return result.text, result.source, intent
+        session.final_summary = payload.summary
+        session.memory.summary = payload.summary
+        result = faq_service.lookup(intent, session.project_id, language, query=user_text)
+        return result.text, result.source, intent, rag_ms
 
     if intent == Intent.SITE_VISIT:
         session.memory.site_visit_interest = True
-        result = faq_service.lookup(intent, session.project_id, language)
-        return result.text, result.source, intent
+        result = faq_service.lookup(intent, session.project_id, language, query=user_text)
+        return result.text, result.source, intent, result.extras.get("rag_ms")
 
     if intent == Intent.BROCHURE:
         session.memory.brochure_requested = True
-        result = faq_service.lookup(intent, session.project_id, language)
-        return result.text, result.source, intent
+        result = faq_service.lookup(intent, session.project_id, language, query=user_text)
+        return result.text, result.source, intent, result.extras.get("rag_ms")
+
+    if intent == Intent.COMPARISON:
+        result = faq_service.lookup(
+            Intent.COMPARISON, session.project_id, language, query=user_text
+        )
+        rag_ms = result.extras.get("rag_ms")
+        return result.text, result.source, intent, rag_ms
 
     if intent == Intent.GREETING:
         result = faq_service.introduction(session.project_id, language)
-        return result.text, result.source, intent
+        return result.text, result.source, intent, rag_ms
 
     if intent == Intent.AFFIRM:
         if session.flow_bucket == FlowBucket.INTRODUCTION:
             transition_to(session, FlowBucket.EDUCATION, "affirm_intro")
             result = faq_service.education(session.project_id, language)
-            return result.text, result.source, intent
+            return result.text, result.source, intent, rag_ms
         if session.flow_bucket == FlowBucket.EDUCATION:
             transition_to(session, FlowBucket.NEXT_STEPS, "affirm_education")
             session.memory.site_visit_interest = True
-            result = faq_service.lookup(Intent.SITE_VISIT, session.project_id, language)
-            return result.text, result.source, Intent.SITE_VISIT
+            result = faq_service.lookup(
+                Intent.SITE_VISIT, session.project_id, language, query=user_text
+            )
+            rag_ms = result.extras.get("rag_ms")
+            return result.text, result.source, Intent.SITE_VISIT, rag_ms
         if session.flow_bucket == FlowBucket.NEXT_STEPS:
             transition_to(session, FlowBucket.CLOSING_SUMMARY, "affirm_next_steps")
             summary = generate_summary(session)
             session.final_summary = summary
-            return summary, f"summary:{session.project_id}", intent
+            session.memory.summary = summary
+            return summary, f"summary:{session.project_id}", intent, rag_ms
         summary = session.final_summary or generate_summary(session)
         session.final_summary = summary
-        return summary, f"summary:{session.project_id}", intent
+        session.memory.summary = summary
+        return summary, f"summary:{session.project_id}", intent, rag_ms
 
     if intent in {
         Intent.PROJECT_INFO,
@@ -236,9 +310,17 @@ def _compose_reply(session: SessionState, route) -> tuple[str, str | None, Inten
         Intent.AMENITIES,
         Intent.CALLBACK,
         Intent.OUT_OF_DOMAIN,
+        Intent.SITE_VISIT,
+        Intent.BROCHURE,
+        Intent.HUMAN_HANDOFF,
     }:
-        result = faq_service.lookup(intent, session.project_id, language)
-        return result.text, result.source, intent
+        # SITE_VISIT / BROCHURE / HANDOFF already handled above; keep for safety.
+        result = faq_service.lookup(intent, session.project_id, language, query=user_text)
+        rag_ms = result.extras.get("rag_ms")
+        return result.text, result.source, intent, rag_ms
 
-    result = faq_service.lookup(Intent.OUT_OF_DOMAIN, session.project_id, language)
-    return result.text, result.source, Intent.OUT_OF_DOMAIN
+    result = faq_service.lookup(
+        Intent.OUT_OF_DOMAIN, session.project_id, language, query=user_text
+    )
+    rag_ms = result.extras.get("rag_ms")
+    return result.text, result.source, Intent.OUT_OF_DOMAIN, rag_ms

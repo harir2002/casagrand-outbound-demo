@@ -1,4 +1,4 @@
-"""Hybrid Sarvam TTS: WebSocket streaming with HTTP REST fallback."""
+"""Hybrid Sarvam TTS — prefer WebSocket streaming, fall back to HTTP REST."""
 
 from __future__ import annotations
 

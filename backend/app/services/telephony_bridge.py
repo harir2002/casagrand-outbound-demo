@@ -54,21 +54,27 @@ class TelephonyBridgeSession:
     account_sid: str | None = None
     inbound_mulaw: bytearray = field(default_factory=bytearray)
     speech_started: bool = False
+    speech_frames: int = 0
     silence_frames: int = 0
     processing: bool = False
     started_at: float = field(default_factory=time.perf_counter)
     timings: BridgeTimings = field(default_factory=BridgeTimings)
     last_reply_text: str | None = None
     closed: bool = False
+    # Ignore inbound audio until this monotonic timestamp (echo after TTS).
+    ignore_inbound_until: float = 0.0
 
 
 class TelephonyBridge:
     """Owns one Media Stream connection and drives voice turns."""
 
-    # ~20ms frames; 25 frames ≈ 500ms silence to end utterance
-    SILENCE_FRAMES_TO_COMMIT = 25
-    MIN_SPEECH_BYTES = 1600  # ~200ms
+    # ~20ms frames; require sustained speech so ambient noise does not trip STT.
+    SPEECH_START_FRAMES = 4  # ~80ms voiced before we treat it as speech
+    SILENCE_FRAMES_TO_COMMIT = 30  # ~600ms silence to end utterance
+    MIN_SPEECH_BYTES = 3200  # ~400ms — drop clicks / brief noise bursts
     MAX_UTTERANCE_BYTES = 8 * 8000  # ~8s μ-law
+    # After agent audio finishes, drop inbound briefly (handset / line echo).
+    POST_TTS_ECHO_GUARD_SEC = 1.2
 
     def __init__(
         self,
@@ -83,7 +89,7 @@ class TelephonyBridge:
         self.orchestrator = orchestrator or get_orchestrator()
         self.settings = settings or get_settings()
         self.bidirectional = bidirectional
-        self.tts_sample_rate = tts_sample_rate or self.settings.sarvam_tts_sample_rate
+        self.tts_sample_rate = tts_sample_rate or self.settings.tts_sample_rate
         self.state: TelephonyBridgeSession | None = None
 
     async def handle_raw_message(self, data: str | bytes) -> None:
@@ -116,7 +122,10 @@ class TelephonyBridge:
         try:
             language = Language(lang_raw)
         except ValueError:
-            language = Language.EN
+            try:
+                language = Language(self.settings.default_language)
+            except ValueError:
+                language = Language.TA
 
         if session_id:
             try:
@@ -149,15 +158,17 @@ class TelephonyBridge:
             ),
         )
         logger.info(
-            "twilio_stream_start call=%s stream=%s session=%s project=%s",
+            "twilio_stream_start call=%s stream=%s session=%s project=%s language=%s",
             message.call_sid,
             message.stream_sid,
             session_id,
             project_id,
+            language.value,
         )
 
-        # Play intro greeting through the existing pipeline (text turn).
-        await self._run_turn(text="hello", interrupt=False)
+        # Speak the session intro already on the transcript — do NOT invent a
+        # fake user "hello" turn (that logged as user speech + re-greeted).
+        await self._play_session_intro()
 
     async def _on_media(self, message: StreamMessage) -> None:
         if not self.state or self.state.closed or self.state.processing:
@@ -172,6 +183,10 @@ class TelephonyBridge:
             return
 
         state = self.state
+        if time.perf_counter() < state.ignore_inbound_until:
+            # Drop echo / residual after agent TTS instead of committing it.
+            return
+
         if state.timings.first_media_ms is None:
             state.timings.first_media_ms = round(
                 (time.perf_counter() - state.started_at) * 1000, 2
@@ -179,12 +194,24 @@ class TelephonyBridge:
 
         quiet = audio_codec.is_mostly_silence_mulaw(payload)
         if not quiet:
-            state.speech_started = True
-            state.silence_frames = 0
+            state.speech_frames += 1
             state.inbound_mulaw.extend(payload)
-        elif state.speech_started:
-            state.silence_frames += 1
-            state.inbound_mulaw.extend(payload)
+            if state.speech_frames >= self.SPEECH_START_FRAMES:
+                state.speech_started = True
+                state.silence_frames = 0
+            elif not state.speech_started:
+                # Keep only the recent candidate frames; discard noise drips.
+                keep = self.SPEECH_START_FRAMES * max(len(payload), 160)
+                if len(state.inbound_mulaw) > keep:
+                    state.inbound_mulaw = bytearray(state.inbound_mulaw[-keep:])
+        else:
+            state.speech_frames = 0
+            if state.speech_started:
+                state.silence_frames += 1
+                state.inbound_mulaw.extend(payload)
+            else:
+                # Ambient noise only — do not accumulate toward an utterance.
+                state.inbound_mulaw.clear()
 
         if len(state.inbound_mulaw) >= self.MAX_UTTERANCE_BYTES:
             await self._commit_utterance()
@@ -208,14 +235,82 @@ class TelephonyBridge:
         if self.state:
             self.state.closed = True
 
+    async def _play_session_intro(self) -> None:
+        """TTS the existing agent greeting without a synthetic user utterance."""
+        if not self.state or self.state.processing:
+            return
+        state = self.state
+        state.processing = True
+        started = time.perf_counter()
+        try:
+            intro_text = ""
+            try:
+                existing = call_service.get_session(state.session_id).session
+                for turn in existing.transcript:
+                    if turn.role == "agent" and turn.text.strip():
+                        intro_text = turn.text.strip()
+                        break
+                state.language = existing.language
+                state.project_id = existing.project_id
+            except Exception:  # noqa: BLE001
+                intro_text = ""
+            if not intro_text:
+                from app.services.faq_service import faq_service
+
+                intro_text = faq_service.introduction(
+                    state.project_id, state.language
+                ).text
+
+            outcome = await self.orchestrator.speak_text(intro_text, state.language)
+            state.last_reply_text = intro_text
+            state.timings.turns += 1
+            state.timings.last_turn_total_ms = outcome.latency_ms
+            state.timings.last_turn_first_audio_ms = outcome.latency_ms
+
+            audio_b64 = getattr(outcome.synthesis, "audio_base64", None)
+            if self.bidirectional and state.stream_sid and audio_b64:
+                await self._play_agent_audio(state.stream_sid, audio_b64)
+            state.inbound_mulaw.clear()
+            state.speech_started = False
+            state.speech_frames = 0
+            state.silence_frames = 0
+            state.ignore_inbound_until = (
+                time.perf_counter() + self.POST_TTS_ECHO_GUARD_SEC
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("twilio_bridge_intro_failed error=%s", exc)
+        finally:
+            state.processing = False
+            logger.info(
+                "twilio_bridge_intro_done session=%s wall_ms=%s",
+                state.session_id,
+                round((time.perf_counter() - started) * 1000, 2),
+            )
+
     async def _commit_utterance(self) -> None:
         if not self.state or self.state.processing:
+            return
+        if time.perf_counter() < self.state.ignore_inbound_until:
+            self.state.inbound_mulaw.clear()
+            self.state.speech_started = False
+            self.state.speech_frames = 0
+            self.state.silence_frames = 0
             return
         mulaw = bytes(self.state.inbound_mulaw)
         self.state.inbound_mulaw.clear()
         self.state.speech_started = False
+        self.state.speech_frames = 0
         self.state.silence_frames = 0
         if len(mulaw) < self.MIN_SPEECH_BYTES:
+            return
+        if not audio_codec.is_utterance_speech_mulaw(
+            mulaw, min_bytes=self.MIN_SPEECH_BYTES
+        ):
+            logger.info(
+                "twilio_bridge_drop_noise session=%s bytes=%s",
+                self.state.session_id,
+                len(mulaw),
+            )
             return
         await self._run_turn(audio_mulaw=mulaw, interrupt=True)
 
@@ -238,6 +333,8 @@ class TelephonyBridge:
                 wav = audio_codec.mulaw_frames_to_wav(audio_mulaw)
                 audio_b64 = base64.b64encode(wav).decode("ascii")
 
+            # skip_llm: keep approved FAQ text for TTS + transcript (Tamil
+            # rewrites were getting truncated / inventing mid-sentence cuts).
             view = await self.orchestrator.handle_turn(
                 TurnRequest(
                     session_id=state.session_id,
@@ -246,6 +343,7 @@ class TelephonyBridge:
                     interrupt=interrupt,
                     audio_base64=audio_b64,
                     audio_mime_type=mime,
+                    skip_llm=True,
                 )
             )
             state.last_reply_text = view.reply_text
@@ -262,6 +360,13 @@ class TelephonyBridge:
                     state.session_id,
                     len(view.reply_text or ""),
                 )
+            state.inbound_mulaw.clear()
+            state.speech_started = False
+            state.speech_frames = 0
+            state.silence_frames = 0
+            state.ignore_inbound_until = (
+                time.perf_counter() + self.POST_TTS_ECHO_GUARD_SEC
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("twilio_bridge_turn_failed error=%s", exc)
         finally:

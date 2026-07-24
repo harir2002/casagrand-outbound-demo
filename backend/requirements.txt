@@ -8,3 +8,6 @@ httpx==0.28.1
 websockets>=14.0
 pytest==8.3.4
 pytest-asyncio==0.25.0
+# Optional: Hugging Face dataset load + Chroma persistence (demo still works without)
+datasets>=2.19.0
+chromadb>=0.5.0

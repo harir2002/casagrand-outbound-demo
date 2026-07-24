@@ -87,16 +87,15 @@ def pcm_or_wav_to_mulaw(
     return pcm16_to_mulaw(pcm)
 
 
-def is_mostly_silence_mulaw(mulaw: bytes, *, threshold: int = 64) -> bool:
-    """Heuristic: μ-law 0xFF is silence; treat near-silence frames as quiet."""
-    if not mulaw:
-        return True
-    # Count bytes close to 0xFF (idle channel)
-    quiet = sum(1 for b in mulaw if b >= 0xFF - 2 or b <= 2)
-    return (quiet / len(mulaw)) >= 0.92 and _pcm_peak(mulaw_to_pcm16(mulaw)) < threshold
+# Telephony VAD: ambient room/line noise should count as silence.
+# 16-bit PCM peak max ≈ 32768; speech on handsets is typically well above these.
+DEFAULT_SILENCE_PEAK = 900
+DEFAULT_SILENCE_RMS = 220.0
+DEFAULT_SPEECH_PEAK = 1200
+DEFAULT_SPEECH_RMS = 280.0
 
 
-def _pcm_peak(pcm: bytes) -> int:
+def pcm16_peak(pcm: bytes) -> int:
     if len(pcm) < 2:
         return 0
     peak = 0
@@ -105,3 +104,74 @@ def _pcm_peak(pcm: bytes) -> int:
         if sample > peak:
             peak = sample
     return peak
+
+
+def pcm16_rms(pcm: bytes) -> float:
+    if len(pcm) < 2:
+        return 0.0
+    total = 0.0
+    count = 0
+    for i in range(0, len(pcm) - 1, 2):
+        sample = struct.unpack_from("<h", pcm, i)[0]
+        total += float(sample * sample)
+        count += 1
+    if count == 0:
+        return 0.0
+    return (total / count) ** 0.5
+
+
+def mulaw_frame_stats(mulaw: bytes) -> tuple[float, int]:
+    """Return (rms, peak) for a μ-law frame after decode."""
+    pcm = mulaw_to_pcm16(mulaw)
+    return pcm16_rms(pcm), pcm16_peak(pcm)
+
+
+def is_mostly_silence_mulaw(
+    mulaw: bytes,
+    *,
+    peak_threshold: int = DEFAULT_SILENCE_PEAK,
+    rms_threshold: float = DEFAULT_SILENCE_RMS,
+) -> bool:
+    """Treat idle channel + ambient floor noise as quiet (do not start STT)."""
+    if not mulaw:
+        return True
+    rms, peak = mulaw_frame_stats(mulaw)
+    if peak < peak_threshold and rms < rms_threshold:
+        return True
+    # Idle μ-law line is ~0xFF; mostly-idle + low energy ⇒ still quiet.
+    quiet = sum(1 for b in mulaw if b >= 0xFF - 2 or b <= 2)
+    return (quiet / len(mulaw)) >= 0.85 and peak < peak_threshold
+
+
+def is_utterance_speech_mulaw(
+    mulaw: bytes,
+    *,
+    min_bytes: int = 3200,
+    min_rms: float = DEFAULT_SPEECH_RMS,
+    min_peak: int = DEFAULT_SPEECH_PEAK,
+    min_voiced_ratio: float = 0.22,
+) -> bool:
+    """Reject noise-only / too-short buffers before sending audio to STT."""
+    if len(mulaw) < min_bytes:
+        return False
+    rms, peak = mulaw_frame_stats(mulaw)
+    if peak < min_peak or rms < min_rms:
+        return False
+    # Fraction of 20ms-ish chunks that look voiced (not ambient).
+    frame = 160
+    if len(mulaw) < frame:
+        return True
+    voiced = 0
+    total = 0
+    for i in range(0, len(mulaw) - frame + 1, frame):
+        total += 1
+        chunk = mulaw[i : i + frame]
+        if not is_mostly_silence_mulaw(chunk):
+            voiced += 1
+    if total == 0:
+        return False
+    return (voiced / total) >= min_voiced_ratio
+
+
+# Back-compat alias
+_pcm_peak = pcm16_peak

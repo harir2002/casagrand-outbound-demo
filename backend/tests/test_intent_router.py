@@ -54,3 +54,19 @@ def test_routes_out_of_domain():
 def test_routes_human_handoff():
     result = route_utterance("I want to speak to a human agent", "highcity")
     assert result.intent == Intent.HUMAN_HANDOFF
+
+
+def test_routes_comparison():
+    result = route_utterance("Compare Highcity vs Mercury", "highcity")
+    assert result.intent == Intent.COMPARISON
+
+
+def test_routes_tamil_affirm():
+    for text in ("சரி", "ஆம்", "ஆமா", "சரி.", "ok", "okay"):
+        result = route_utterance(text, "highcity")
+        assert result.intent == Intent.AFFIRM, text
+
+
+def test_routes_tamil_greeting():
+    result = route_utterance("வணக்கம்", "highcity")
+    assert result.intent == Intent.GREETING

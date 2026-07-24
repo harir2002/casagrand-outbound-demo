@@ -16,28 +16,30 @@ class Settings(BaseSettings):
     app_env: str = "local"
     log_level: str = "INFO"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
-    default_language: str = "en"
+    default_language: str = "ta"
     default_project: str = "highcity"
 
     # live = real providers required; test = stubs allowed for automated tests
     provider_mode: str = "live"
     allow_test_stubs: bool = False
 
-    # Explicit names: sarvam | groq | auto | stub (stub only in test mode)
+    # Explicit names: sarvam (STT + TTS) | groq (LLM) | auto | stub
     stt_provider: str = "sarvam"
     tts_provider: str = "sarvam"
     llm_provider: str = "groq"
 
+    # Sarvam STT + TTS (single API key)
     sarvam_api_key: str = ""
     sarvam_base_url: str = "https://api.sarvam.ai"
     sarvam_stt_model: str = "saaras:v3"
+    # codemix keeps Tamil script dominant with English brand/product words
+    sarvam_stt_mode: str = "codemix"
     sarvam_tts_model: str = "bulbul:v2"
     sarvam_tts_speaker: str = "anushka"
-    sarvam_stt_mode: str = "transcribe"
-    # WebSocket streaming TTS (HTTP REST remains fallback / backup path)
     sarvam_tts_streaming: bool = True
     sarvam_tts_ws_url: str = "wss://api.sarvam.ai/text-to-speech/ws"
     sarvam_tts_sample_rate: int = 22050
+    tts_sample_rate: int = 22050
 
     groq_api_key: str = ""
     groq_base_url: str = "https://api.groq.com/openai/v1"
@@ -60,6 +62,16 @@ class Settings(BaseSettings):
     twilio_voice_webhook_path: str = "/twilio/voice-webhook"
     twilio_validate_signatures: bool = True
     twilio_status_callback_path: str = "/twilio/status-callback"
+
+    # Domain KB / RAG (HF dataset optional; local seed always available)
+    hf_dataset_id: str = ""
+    hf_dataset_split: str = "train"
+    # Empty = ephemeral rebuild each startup (free Spaces).
+    # Set to /data/casagrand_rag on Spaces with persistent storage.
+    rag_persist_directory: str = ""
+    rag_force_rebuild: bool = False
+    rag_top_k: int = 3
+    rag_enabled: bool = True
 
     @property
     def cors_origin_list(self) -> list[str]:

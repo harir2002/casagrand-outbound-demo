@@ -17,8 +17,19 @@ logger = get_logger(__name__)
 _LANG_MAP = {
     Language.EN: "en-IN",
     Language.TA: "ta-IN",
-    Language.TANGLISH: "en-IN",
+    # Tamil-primary code-mix; English loanwords kept via mode=codemix
+    Language.TANGLISH: "ta-IN",
 }
+
+
+def _stt_mode_for(language: Language | None, configured_mode: str) -> str:
+    """Prefer codemix for Tamil-primary calls; keep English on plain transcribe."""
+    mode = (configured_mode or "transcribe").strip().lower()
+    if language in (Language.TA, Language.TANGLISH):
+        return mode if mode in {"codemix", "transcribe", "verbatim", "translit"} else "codemix"
+    if language == Language.EN and mode == "codemix":
+        return "transcribe"
+    return mode or "transcribe"
 
 
 class SarvamSTT(STTProvider):
@@ -66,10 +77,13 @@ class SarvamSTT(STTProvider):
         headers = {"api-subscription-key": self.api_key}
         data = {
             "model": self.model,
-            "mode": self.mode,
+            "mode": _stt_mode_for(language, self.mode),
         }
         if language is not None:
-            data["language_code"] = _LANG_MAP.get(language, "en-IN")
+            data["language_code"] = _LANG_MAP.get(language, "ta-IN")
+        elif self.mode.strip().lower() == "codemix":
+            # Tamil-primary default when caller omits language
+            data["language_code"] = "ta-IN"
 
         extension = "wav"
         if "mpeg" in mime_type or "mp3" in mime_type:

@@ -20,6 +20,7 @@ from app.services import call_service
 from app.services.audio_pipeline import AudioPipeline, SynthesizeOutcome
 from app.services.fallback_service import text_only_fallback
 from app.services.response_builder import build_provider_call_view
+from app.services.session_memory import to_session_memory
 from app.services.streaming_turn import (
     aggregate_pcm_to_synthesis,
     decode_wav_pcm,
@@ -30,7 +31,11 @@ from app.services.streaming_turn import (
 logger = get_logger(__name__)
 
 SYSTEM_PROMPT = (
-    "Casagrand voice assistant. Rephrase only; no new facts. Max 2 short sentences."
+    "Casagrand voice assistant. Rephrase only using the provided ANSWER. "
+    "Keep the same language and script as ANSWER. For Tamil, reply in Tamil "
+    "script (~90% Tamil) with at most light English for brand/project terms "
+    "(~10%). Never switch the whole reply to English. "
+    "Do not invent prices, inventory, or amenities. Max 2 short sentences."
 )
 
 
@@ -38,6 +43,11 @@ class ConversationOrchestrator:
     def __init__(self, bundle: ProviderBundle) -> None:
         self.bundle = bundle
         self.audio = AudioPipeline(self.bundle)
+
+    async def speak_text(self, text: str, language: Language) -> SynthesizeOutcome:
+        """TTS-only helper (e.g. play session intro without a fake user turn)."""
+        speech = (text or "").strip() or "வணக்கம்."
+        return await self.audio.synthesize(speech, language)
 
     async def handle_turn(self, payload: TurnRequest) -> CallViewResponse:
         started = time.perf_counter()
@@ -87,6 +97,7 @@ class ConversationOrchestrator:
                 project_id=session_result.session.project_id,
                 bucket=session_result.session.flow_bucket.value,
                 skip_llm=payload.skip_llm,
+                memory_context=to_session_memory(session_result.session).prompt_context(),
             )
         )
         warnings.extend(llm_warnings)
@@ -205,6 +216,7 @@ class ConversationOrchestrator:
                     project_id=project_id,
                     bucket=bucket,
                     skip_llm=payload.skip_llm,
+                    memory_context=to_session_memory(session_result.session).prompt_context(),
                 )
             )
             warnings.extend(llm_warnings)
@@ -297,20 +309,23 @@ class ConversationOrchestrator:
 
         async def pump_tts() -> None:
             nonlocal transport, fallback_used, tts_stream_start_ms
-            async for chunk in self.bundle.tts.stream_audio_from_texts(
-                speech_text_iterator(speech_q), language
-            ):
-                meta = chunk.meta or {}
-                transport = str(meta.get("transport") or transport)
-                fallback_used = bool(meta.get("fallback_used") or fallback_used)
-                if tts_stream_start_ms is None and meta.get("stream_start_ms") is not None:
-                    tts_stream_start_ms = float(meta["stream_start_ms"])
-                wav_chunks.append(chunk.audio_base64)
-                pcm = chunk.pcm_bytes or decode_wav_pcm(chunk.audio_base64)
-                if pcm:
-                    pcm_parts.append(pcm)
-                await text_q.put(("audio", chunk))
-            await text_q.put(("audio_done", None))
+            try:
+                async for chunk in self.bundle.tts.stream_audio_from_texts(
+                    speech_text_iterator(speech_q), language
+                ):
+                    meta = chunk.meta or {}
+                    transport = str(meta.get("transport") or transport)
+                    fallback_used = bool(meta.get("fallback_used") or fallback_used)
+                    if tts_stream_start_ms is None and meta.get("stream_start_ms") is not None:
+                        tts_stream_start_ms = float(meta["stream_start_ms"])
+                    wav_chunks.append(chunk.audio_base64)
+                    pcm = chunk.pcm_bytes or decode_wav_pcm(chunk.audio_base64)
+                    if pcm:
+                        pcm_parts.append(pcm)
+                    await text_q.put(("audio", chunk))
+            finally:
+                # Always unblock the consumer, even when TTS raises (billing/network).
+                await text_q.put(("audio_done", None))
 
         tts_task = asyncio.create_task(pump_tts())
 
@@ -436,6 +451,14 @@ class ConversationOrchestrator:
         llm_first_token = (
             (llm_result.meta or {}).get("first_token_ms") if llm_result else None
         )
+        rag_ms = None
+        for note in session_result.session.memory.notes:
+            if isinstance(note, str) and note.startswith("rag_ms="):
+                try:
+                    rag_ms = float(note.split("=", 1)[1])
+                except ValueError:
+                    rag_ms = None
+
 
         logger.info(
             "orchestrator_turn mode=%s session=%s stt=%.1f domain=%.1f "
@@ -475,6 +498,7 @@ class ConversationOrchestrator:
                 "timings": {
                     "stt_ms": stt_ms,
                     "domain_ms": domain_ms,
+                    "rag_ms": rag_ms,
                     "llm_ms": llm_ms,
                     "llm_first_token_ms": llm_first_token,
                     "tts_ms": tts_outcome.latency_ms,
@@ -483,6 +507,9 @@ class ConversationOrchestrator:
                     "parallel_wall_ms": parallel_wall_ms,
                     "total_ms": total_ms,
                 },
+                "memory": to_session_memory(session_result.session).model_dump(
+                    mode="json"
+                ),
                 "degraded": tts_outcome.degraded,
             },
             warnings=warnings,
@@ -501,6 +528,7 @@ class ConversationOrchestrator:
         project_id: str,
         bucket: str,
         skip_llm: bool,
+        memory_context: str = "",
     ) -> tuple[str, LlmResult | None, list[str], float, SynthesizeOutcome, float]:
         """TTS grounded FAQ while LLM polishes in parallel (wall ≈ max)."""
         wall_started = time.perf_counter()
@@ -522,6 +550,7 @@ class ConversationOrchestrator:
                 project_id=project_id,
                 bucket=bucket,
                 skip_llm=False,
+                memory_context=memory_context,
             )
         )
         tts_task = asyncio.create_task(
@@ -541,15 +570,18 @@ class ConversationOrchestrator:
         project_id: str,
         bucket: str,
         skip_llm: bool,
+        memory_context: str = "",
     ) -> tuple[str, LlmResult | None, list[str], float]:
         if skip_llm or not grounded_answer.strip():
             return grounded_answer, None, [], 0.0
 
+        memory_line = f"memory={memory_context}\n" if memory_context else ""
         prompt = (
             f"lang={language.value} project={project_id} bucket={bucket}\n"
+            f"{memory_line}"
             f"user={user_text}\n"
             f"ANSWER:\n{grounded_answer}\n"
-            "Rewrite for speech only."
+            "Rewrite for speech only. Do not add prices or inventory."
         )
         started = time.perf_counter()
         warnings: list[str] = []

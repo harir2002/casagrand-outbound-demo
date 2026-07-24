@@ -1,4 +1,4 @@
-"""Sarvam TTS adapter (REST; persistent HTTP client)."""
+"""Sarvam TTS adapter (REST HTTP). Used by HybridSarvamTTS as the reliable path."""
 
 from __future__ import annotations
 

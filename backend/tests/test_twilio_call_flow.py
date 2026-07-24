@@ -7,7 +7,9 @@ via stub pipeline) → status callbacks → call completion. No live network.
 from __future__ import annotations
 
 import base64
+import math
 import re
+import struct
 
 import pytest
 
@@ -25,6 +27,14 @@ from app.services.conversation_orchestrator import ConversationOrchestrator
 from app.services.session_store import store
 from app.services.telephony_bridge import TelephonyBridge
 from tests.doubles.providers import StubLLM, StubSTT, StubTTS
+
+
+def _loud_frame_b64(samples: int = 160) -> str:
+    pcm = bytearray()
+    for i in range(samples):
+        value = int(9000 * math.sin(2 * math.pi * 400 * i / 8000.0))
+        pcm += struct.pack("<h", value)
+    return base64.b64encode(pcm16_to_mulaw(bytes(pcm))).decode("ascii")
 
 
 class _FakeTwilioClient:
@@ -106,6 +116,8 @@ async def test_full_call_flow_outbound_to_bridge(client, monkeypatch):
     )
     bridge.MIN_SPEECH_BYTES = 80
     bridge.SILENCE_FRAMES_TO_COMMIT = 2
+    bridge.SPEECH_START_FRAMES = 2
+    bridge.POST_TTS_ECHO_GUARD_SEC = 0.0
 
     await bridge.handle_raw_message('{"event": "connected", "protocol": "Call"}')
     await bridge.handle_message(
@@ -128,17 +140,17 @@ async def test_full_call_flow_outbound_to_bridge(client, monkeypatch):
     assert bridge.state.session_id == session_id  # session preserved across layers
 
     # Caller speech then silence → utterance committed → STT→LLM→TTS turn
-    speech_b64 = base64.b64encode(pcm16_to_mulaw(b"\x80\x00" * 200)).decode("ascii")
     silence_b64 = base64.b64encode(b"\xff" * 160).decode("ascii")
-    await bridge.handle_message(
-        parse_stream_message(
-            {
-                "event": "media",
-                "streamSid": "MZflow",
-                "media": {"track": "inbound", "payload": speech_b64},
-            }
+    for _ in range(6):
+        await bridge.handle_message(
+            parse_stream_message(
+                {
+                    "event": "media",
+                    "streamSid": "MZflow",
+                    "media": {"track": "inbound", "payload": _loud_frame_b64()},
+                }
+            )
         )
-    )
     for _ in range(3):
         await bridge.handle_message(
             parse_stream_message(

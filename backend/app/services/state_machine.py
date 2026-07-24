@@ -20,6 +20,7 @@ EDUCATION_INTENTS = {
     Intent.LOCATION,
     Intent.AMENITIES,
     Intent.CONTEXT_SWITCH,
+    Intent.COMPARISON,
 }
 
 NEXT_STEPS_INTENTS = {

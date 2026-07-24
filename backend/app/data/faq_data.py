@@ -52,7 +52,7 @@ def build_introduction(project_id: str, language: Language) -> tuple[str, str]:
     if language == Language.TA:
         text = (
             f"வணக்கம்! நான் Casagrand குரல் உதவியாளர். இன்று {name} "
-            f"பற்றி பேசலாம் — வசதிகள், இடம், விலை மற்றும் தள வருகை. "
+            f"பற்றி பேசலாம் — வசதிகள், இடம், விலை மற்றும் site visit. "
             f"தொடர அனுமதி இருக்கிறதா?"
         )
     elif language == Language.TANGLISH:

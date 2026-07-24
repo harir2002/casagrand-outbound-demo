@@ -23,4 +23,6 @@ def health() -> HealthResponse:
         stt_provider=settings.stt_provider,
         tts_provider=settings.tts_provider,
         llm_provider=settings.llm_provider,
+        tts_voice_id=settings.sarvam_tts_speaker or "anushka",
+        tts_voice_name=settings.sarvam_tts_model or "bulbul:v2",
     )

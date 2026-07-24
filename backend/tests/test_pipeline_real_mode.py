@@ -20,6 +20,7 @@ def test_real_mode_config_valid_with_keys(monkeypatch):
 def test_real_mode_config_invalid_without_keys(monkeypatch):
     monkeypatch.setenv("PROVIDER_MODE", "live")
     monkeypatch.setenv("ALLOW_TEST_STUBS", "false")
+    monkeypatch.setenv("TTS_PROVIDER", "sarvam")
     monkeypatch.setenv("SARVAM_API_KEY", "")
     monkeypatch.setenv("GROQ_API_KEY", "")
     reset_settings_cache()

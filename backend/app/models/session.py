@@ -33,6 +33,7 @@ class Intent(str, Enum):
     GREETING = "greeting"
     AFFIRM = "affirm"
     BROCHURE = "brochure"
+    COMPARISON = "comparison"
     UNKNOWN = "unknown"
 
 
@@ -46,11 +47,19 @@ class TranscriptTurn(BaseModel):
 
 class MemorySlots(BaseModel):
     caller_name: str | None = None
+    customer_name: str | None = None
     preferred_callback_time: str | None = None
+    callback_choice: str | None = None
     site_visit_interest: bool | None = None
     site_visit_preferred_day: str | None = None
     budget_mentioned: str | None = None
+    budget_band: str | None = None
+    unit_preference: str | None = None
     brochure_requested: bool | None = None
+    last_question: str | None = None
+    handoff_reason: str | None = None
+    summary: str | None = None
+    last_rag_sources: list[str] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
 
 
@@ -119,6 +128,8 @@ class HealthResponse(BaseModel):
     stt_provider: str | None = None
     tts_provider: str | None = None
     llm_provider: str | None = None
+    tts_voice_id: str | None = None
+    tts_voice_name: str | None = None
 
 
 class HandoffPayload(BaseModel):

@@ -11,20 +11,22 @@ import asyncio
 import base64
 import json
 import time
-import wave
 from collections.abc import AsyncIterator, Awaitable, Callable
-from io import BytesIO
 from typing import Any
 from urllib.parse import urlencode
 
 from app.core.logging import get_logger
 from app.models.session import Language
 from app.providers.stream_events import AudioChunk
+from app.providers.tts.audio_utils import pcm_chunks_to_wav_base64
 from app.providers.tts.base import TTSProvider
 from app.providers.tts.sarvam_tts import _LANG_MAP, SarvamTTS
 from app.providers.types import SynthesisResult
 
 logger = get_logger(__name__)
+
+# Re-export for older imports; prefer app.providers.tts.audio_utils.
+__all__ = ["SarvamStreamingTTS", "pcm_chunks_to_wav_base64"]
 
 ConnectFn = Callable[..., Awaitable[Any]]
 
@@ -35,20 +37,7 @@ def _default_connect(*args: Any, **kwargs: Any) -> Awaitable[Any]:
     return websockets.connect(*args, **kwargs)
 
 
-def pcm_chunks_to_wav_base64(
-    pcm: bytes,
-    *,
-    sample_rate: int = 22050,
-    channels: int = 1,
-    sample_width: int = 2,
-) -> str:
-    buf = BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(sample_width)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm)
-    return base64.b64encode(buf.getvalue()).decode("ascii")
+# pcm_chunks_to_wav_base64 moved to audio_utils — keep local name for call sites below.
 
 
 class SarvamStreamingTTS(TTSProvider):

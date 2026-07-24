@@ -75,6 +75,19 @@ export function createCallController({
     return state;
   }
 
+  /** Map dial context (camelCase UI) → outbound API body. */
+  function toOutboundBody(raw, context = {}) {
+    const body = {
+      customerName: context.customerName || null,
+      sessionId: context.sessionId || null,
+      projectId: context.projectId || null,
+      language: context.language || null,
+    };
+    if (raw) body.to = raw;
+    if (context.leadId) body.leadId = context.leadId;
+    return body;
+  }
+
   return {
     get state() {
       return state;
@@ -86,12 +99,14 @@ export function createCallController({
       if (validation) {
         return emit({ phoneError: validation });
       }
-      return startAndTrack({ to: normalizePhone(rawPhone), ...context });
+      return startAndTrack(
+        toOutboundBody(normalizePhone(rawPhone), context)
+      );
     },
 
     /** Start an outbound call to a demo lead; server re-checks eligibility. */
     async dialLead(leadId, context = {}) {
-      return startAndTrack({ leadId, ...context });
+      return startAndTrack(toOutboundBody(null, { ...context, leadId }));
     },
 
     dispose() {
